@@ -214,70 +214,69 @@ def plot_location_map(df_all_loc_filtered):
         st.info("Location data not available or filtered out.")
         return
 
+    # Ensure pydeck loads inside this function
+    import pydeck as pdk
+
+    # Load Mapbox token securely (MUST be here, not above)
+    MAPBOX_API_KEY = st.secrets.get("MAPBOX_API_KEY", None)
+
+    if MAPBOX_API_KEY is None:
+        st.error("❌ Mapbox API key missing inside plot_location_map().")
+        return
+
     # --- Data Cleaning ---
     df_all_loc_filtered["Latitude"] = pd.to_numeric(df_all_loc_filtered["Latitude"], errors='coerce')
     df_all_loc_filtered["Longitude"] = pd.to_numeric(df_all_loc_filtered["Longitude"], errors='coerce')
 
-    # Drop rows where Lat/Lon is NaN or exactly 0.0
+    # Drop invalid locations
     map_data = df_all_loc_filtered.dropna(subset=["Latitude", "Longitude"])
     map_data = map_data[(map_data["Latitude"] != 0) & (map_data["Longitude"] != 0)]
-    
-    # Re-aggregate to get hotspot intensity for the map view
+
+    # Aggregate
     map_data_agg = map_data.groupby(['Latitude', 'Longitude']).size().reset_index(name='total_violations')
 
     if map_data_agg.empty:
-        st.warning("No valid coordinates found for mapping (Lat/Lon are 0 or null after filtering).")
+        st.warning("No valid coordinates found for mapping.")
         return
 
-    # Show table of top 10 locations by count
+    # Show top 10 hotspots
     st.subheader("Violation Hotspots Table")
     st.dataframe(
-        map_data_agg.sort_values("total_violations", ascending=False).head(10).reset_index(drop=True)
+        map_data_agg.sort_values("total_violations", ascending=False).head(10)
     )
-
-    # Load Mapbox token securely
-    MAPBOX_API_KEY = st.secrets.get("MAPBOX_API_KEY", None)
 
     st.subheader("Spatial Distribution Map")
 
-    # If pydeck is installed, use heatmap
-    if USE_PYDECK:
-        if not MAPBOX_API_KEY:
-            st.error(
-                "Missing Mapbox API key.\n"
-                "Add it in Streamlit Cloud → App → Settings → Secrets as:\n\n"
-                "MAPBOX_API_KEY = \"your_mapbox_key_here\""
-            )
-            return
+    # Compute center
+    mid_lat = map_data_agg["Latitude"].mean()
+    mid_lon = map_data_agg["Longitude"].mean()
 
-        mid_lat = map_data_agg["Latitude"].mean()
-        mid_lon = map_data_agg["Longitude"].mean()
-        
-        layer = pdk.Layer(
-            "HeatmapLayer",
-            data=map_data_agg,
-            opacity=0.8,
-            get_position=["Longitude", "Latitude"],
-            get_weight="total_violations",
-        )
-        view_state = pdk.ViewState(latitude=mid_lat, longitude=mid_lon, zoom=10, pitch=40)
-        
-        r = pdk.Deck(
-            layers=[layer], 
-            initial_view_state=view_state,
-            map_style="mapbox://styles/mapbox/dark-v9",
-            mapbox_key=MAPBOX_API_KEY  # ← TOKEN ADDED HERE
-        )
+    # Create heatmap layer
+    layer = pdk.Layer(
+        "HeatmapLayer",
+        data=map_data_agg,
+        get_position=["Longitude", "Latitude"],
+        get_weight="total_violations",
+        opacity=0.8,
+    )
 
-        st.pydeck_chart(r)
+    view_state = pdk.ViewState(
+        latitude=mid_lat,
+        longitude=mid_lon,
+        zoom=10,
+        pitch=40
+    )
 
-    else:
-        st.info("PyDeck not installed. Showing basic map (limited to 1000 points).")
-        st.map(
-            map_data_agg.head(1000).rename(
-                columns={"Latitude": "lat", "Longitude": "lon"}
-            )
-        )
+    # Render map
+    r = pdk.Deck(
+        layers=[layer],
+        initial_view_state=view_state,
+        map_style="mapbox://styles/mapbox/dark-v9",
+        mapbox_key=MAPBOX_API_KEY  # NOW VALID
+    )
+
+    st.pydeck_chart(r)
+
 
         
 def display_kpis(df_all_loc_filtered, df_type_filtered):
