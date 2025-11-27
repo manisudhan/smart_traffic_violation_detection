@@ -1,0 +1,11 @@
+[theme]
+# Ensures the base colors are light (default setting)
+base="light" 
+# Sets a custom primary color (e.g., a nice blue for buttons/links)
+primaryColor="#1f77b4"
+# Sets the background color of the main content area (white)
+backgroundColor="#FFFFFF"
+# Sets the background color of the sidebar (a very light gray)
+secondaryBackgroundColor="#f0f2f6" 
+# Sets the text color to black
+textColor="#111111"
