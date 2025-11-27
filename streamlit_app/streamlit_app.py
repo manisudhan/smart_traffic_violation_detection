@@ -314,6 +314,13 @@ def display_kpis(df_all_loc_filtered, df_type_filtered):
 # Main Application
 
 def main():
+
+    st.write("Secrets loaded:", list(st.secrets.keys()))
+    st.write("MAPBOX exists:", "MAPBOX_API_KEY" in st.secrets)
+    st.write("MAPBOX value starts with pk:", st.secrets.get("MAPBOX_API_KEY", "").startswith("pk"))
+    import pydeck as pdk
+    st.write("PyDeck version:", pdk.__version__)
+
     st.title("🚨 Traffic Violation Analysis Dashboard")
     st.markdown("A visual analytics interface powered by **pre-aggregated PySpark outputs**.")
 
