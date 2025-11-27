@@ -225,7 +225,6 @@ def plot_location_map(df_all_loc_filtered):
     # Re-aggregate to get hotspot intensity for the map view
     map_data_agg = map_data.groupby(['Latitude', 'Longitude']).size().reset_index(name='total_violations')
 
-
     if map_data_agg.empty:
         st.warning("No valid coordinates found for mapping (Lat/Lon are 0 or null after filtering).")
         return
@@ -236,9 +235,21 @@ def plot_location_map(df_all_loc_filtered):
         map_data_agg.sort_values("total_violations", ascending=False).head(10).reset_index(drop=True)
     )
 
-    # Map
+    # Load Mapbox token securely
+    MAPBOX_API_KEY = st.secrets.get("MAPBOX_API_KEY", None)
+
     st.subheader("Spatial Distribution Map")
+
+    # If pydeck is installed, use heatmap
     if USE_PYDECK:
+        if not MAPBOX_API_KEY:
+            st.error(
+                "Missing Mapbox API key.\n"
+                "Add it in Streamlit Cloud → App → Settings → Secrets as:\n\n"
+                "MAPBOX_API_KEY = \"your_mapbox_key_here\""
+            )
+            return
+
         mid_lat = map_data_agg["Latitude"].mean()
         mid_lon = map_data_agg["Longitude"].mean()
         
@@ -250,15 +261,24 @@ def plot_location_map(df_all_loc_filtered):
             get_weight="total_violations",
         )
         view_state = pdk.ViewState(latitude=mid_lat, longitude=mid_lon, zoom=10, pitch=40)
+        
         r = pdk.Deck(
             layers=[layer], 
-            initial_view_state=view_state, 
-            map_style="mapbox://styles/mapbox/dark-v9" # Changed map style to dark for better contrast
+            initial_view_state=view_state,
+            map_style="mapbox://styles/mapbox/dark-v9",
+            mapbox_key=MAPBOX_API_KEY  # ← TOKEN ADDED HERE
         )
+
         st.pydeck_chart(r)
+
     else:
         st.info("PyDeck not installed. Showing basic map (limited to 1000 points).")
-        st.map(map_data_agg.head(1000).rename(columns={"Latitude": "lat", "Longitude": "lon"}))
+        st.map(
+            map_data_agg.head(1000).rename(
+                columns={"Latitude": "lat", "Longitude": "lon"}
+            )
+        )
+
         
 def display_kpis(df_all_loc_filtered, df_type_filtered):
     """Displays key performance indicators at the top."""
