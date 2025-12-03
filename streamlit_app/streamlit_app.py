@@ -1,6 +1,7 @@
 """
 Streamlit dashboard for Traffic Violation Analysis
 Reads precomputed parquet outputs created by a PySpark pipeline.
+This version includes Daily Trend and Top N Location plots.
 """
 
 import streamlit as st
@@ -24,14 +25,12 @@ st.set_page_config(
 )
 
 # Custom function to display text slightly larger (simulating h2 size for readability)
-# NOTE: Streamlit's default h2 is handled by st.subheader()
 def display_custom_subheader(text):
     """Uses Markdown to increase text size, similar to a larger H3 or small H2."""
     st.markdown(f"### <p style='font-size: 24px;'>{text}</p>", unsafe_allow_html=True)
 
 
 # Utility Functions
-# ... (load_parquet, convert_df_to_bytes, load_all_data functions remain unchanged)
 @st.cache_data(ttl=3600)
 def load_parquet(path):
     """
@@ -116,8 +115,14 @@ def setup_sidebar(df_type, df_all_loc):
     # 3. Severity filter
     selected_severity = None
     if df_all_loc is not None and "Severity" in df_all_loc.columns:
-        severity_vals = sorted(df_all_loc["Severity"].dropna().unique())
+        severity_vals = sorted(df_all_loc["Severity"].dropna().astype(str).unique())
         if severity_vals:
+            # Convert to int for proper display/sorting if they are numeric
+            try:
+                severity_vals = sorted([int(x) for x in severity_vals if x.isdigit()])
+            except:
+                pass # Keep as strings if conversion fails
+                
             selected_severity = st.sidebar.multiselect(
                 "Filter by Violation Severity", options=severity_vals, default=severity_vals
             )
@@ -148,16 +153,56 @@ def plot_hourly_trend(df_hour):
         
     st.subheader("Hourly Breakdown")
     chart_df = df_hour.sort_values("hour")
-    base = alt.Chart(chart_df).encode(x=alt.X("hour:Q", title="Hour of Day (24-Hour Clock)",axis=alt.Axis(titleFontSize=30, labelFontSize=40,labelColor="black")))
-    # Changed bar color for better contrast
+    base = alt.Chart(chart_df).encode(x=alt.X("hour:Q", title="Hour of Day (24-Hour Clock)",axis=alt.Axis(titleFontSize=25, labelFontSize=15,labelColor="black")))
+    
     bars = base.mark_bar(opacity=0.8, color="#1f77b4").encode( # Deep Blue
-        y=alt.Y("total_violations:Q", title="Total Violations",axis=alt.Axis(titleFontSize=30, labelFontSize=30,labelColor="black")),
+        y=alt.Y("total_violations:Q", title="Total Violations",axis=alt.Axis(titleFontSize=25, labelFontSize=15,labelColor="black")),
         tooltip=["hour", "total_violations"]
     )
     line = base.mark_line(color="black", strokeWidth=3).encode(y="total_violations:Q")
     
     st.altair_chart(
         (bars + line).interactive().properties(height=500, title="Violations by Time of Day"), 
+        use_container_width=True
+    )
+
+def plot_daily_trend(df_day):
+    """Displays an Altair line chart for daily trends."""
+    if df_day is None or df_day.empty:
+        st.info("Daily trend data not available or filtered out.")
+        return
+        
+    # Check for required columns. If 'date' is named differently, adjust here.
+    if not {"date", "total_violations"}.issubset(df_day.columns):
+        st.warning("Daily data missing 'date' or 'total_violations' columns.")
+        return
+
+    st.subheader("Daily Violation Trend")
+    chart_df = df_day.copy()
+    
+    # Convert 'date' column if it's not already a datetime object (essential for time-series charts)
+    if not pd.api.types.is_datetime64_any_dtype(chart_df['date']):
+        try:
+            chart_df['date'] = pd.to_datetime(chart_df['date'])
+        except Exception as e:
+            st.error(f"Could not convert 'date' column to datetime: {e}")
+            return
+
+    chart_df = chart_df.sort_values("date")
+    
+    base = alt.Chart(chart_df).encode(
+        x=alt.X("date:T", title="Date", axis=alt.Axis(titleFontSize=25, labelFontSize=15, labelColor="black")),
+        y=alt.Y("total_violations:Q", title="Total Violations", axis=alt.Axis(titleFontSize=25, labelFontSize=15, labelColor="black")),
+        tooltip=[alt.Tooltip("date:T", title="Date"), "total_violations"]
+    )
+    
+    line = base.mark_line(color="#ff7f0e", strokeWidth=3).properties(
+        title="Total Violations Over Time"
+    )
+    points = base.mark_point(filled=True, size=50, color="#ff7f0e")
+    
+    st.altair_chart(
+        (line + points).interactive().properties(height=500), 
         use_container_width=True
     )
 
@@ -172,11 +217,11 @@ def plot_type_distribution(df_type):
     
     # Bar chart
     chart = alt.Chart(df_type_sorted.head(15)).mark_bar().encode( 
-        x=alt.X("total_violations:Q", title="Total Violations Count",axis=alt.Axis(titleFontSize=25, labelFontSize=25,labelColor="black")),
+        x=alt.X("total_violations:Q", title="Total Violations Count",axis=alt.Axis(titleFontSize=25, labelFontSize=15,labelColor="black")),
         y=alt.Y("Violation_Type:N", sort='-x', title="Violation Type",axis=alt.Axis(titleFontSize=25, labelFontSize=15,labelColor="black")),
         color=alt.value("#2ca02c"), # Stronger Teal/Green for contrast
         tooltip=["Violation_Type", "total_violations"]
-    ).properties(title="Top Violation Types Distribution", height=500)
+    ).properties(title="Top 15 Violation Types Distribution", height=500)
     
     st.altair_chart(chart.interactive(), use_container_width=True)
     
@@ -208,6 +253,48 @@ def plot_time_type_heatmap(df_type_time):
     
     st.altair_chart(heat.interactive(), use_container_width=True)
 
+def plot_top_locations_bar(df_all_loc_filtered, top_n=15):
+    """
+    Displays a bar chart for the top N violation locations (e.g., street names).
+    Aggregates the filtered raw location data.
+    """
+    if df_all_loc_filtered is None or df_all_loc_filtered.empty:
+        st.info("Location data not available or filtered out.")
+        return
+    
+    # Determine the best column for location name
+    location_col = None
+    if 'Location' in df_all_loc_filtered.columns:
+        location_col = 'Location'
+    elif 'Street' in df_all_loc_filtered.columns:
+        location_col = 'Street'
+    elif 'Location_Name' in df_all_loc_filtered.columns:
+        location_col = 'Location_Name'
+    
+    if location_col is None:
+        st.error("Cannot find a suitable location column ('Location', 'Street', or 'Location_Name') for the bar chart.")
+        return
+
+    # Aggregate by location name
+    df_toploc_agg = df_all_loc_filtered.groupby(location_col).size().reset_index(name='total_violations')
+    df_toploc_agg_sorted = df_toploc_agg.sort_values("total_violations", ascending=False).head(top_n)
+
+    if df_toploc_agg_sorted.empty:
+        st.info(f"No valid locations found in the top {top_n} after filtering.")
+        return
+
+    st.subheader(f"Top {top_n} Violation Locations (Non-Map)")
+    
+    chart = alt.Chart(df_toploc_agg_sorted).mark_bar().encode(
+        x=alt.X("total_violations:Q", title="Total Violations Count", axis=alt.Axis(titleFontSize=25, labelFontSize=15, labelColor="black")),
+        y=alt.Y(alt.Field(location_col, type="nominal"), sort='-x', title="Location/Street Name", axis=alt.Axis(titleFontSize=25, labelFontSize=15, labelColor="black")),
+        color=alt.value("#d62728"), # Strong Red
+        tooltip=[alt.Field(location_col, title="Location"), "total_violations"]
+    ).properties(title=f"Top {top_n} Locations by Violation Count", height=500)
+    
+    st.altair_chart(chart.interactive(), use_container_width=True)
+
+
 def plot_location_map(df_all_loc_filtered):
     if df_all_loc_filtered is None or df_all_loc_filtered.empty:
         st.info("Location data not available or filtered out.")
@@ -215,14 +302,18 @@ def plot_location_map(df_all_loc_filtered):
 
     import pydeck as pdk
 
+    # NOTE: In a production Streamlit Cloud app, this key should be set in secrets.toml
     MAPBOX_API_KEY = st.secrets.get("MAPBOX_API_KEY", None)
 
-    if MAPBOX_API_KEY is None:
-        st.error("Missing Mapbox API key in secrets.")
+    if MAPBOX_API_KEY is None and not USE_PYDECK:
+        # Fallback for local testing if PyDeck import failed
+        st.error("PyDeck failed to load or Mapbox API key is missing in secrets.")
         return
-
-    # Force Mapbox key globally — required on Streamlit Cloud
-    os.environ["MAPBOX_API_KEY"] = MAPBOX_API_KEY
+    
+    if USE_PYDECK:
+        # Force Mapbox key globally — required on Streamlit Cloud
+        if MAPBOX_API_KEY:
+            os.environ["MAPBOX_API_KEY"] = MAPBOX_API_KEY
 
     # --- Data Cleaning ---
     df_all_loc_filtered["Latitude"] = pd.to_numeric(df_all_loc_filtered["Latitude"], errors='coerce')
@@ -237,9 +328,10 @@ def plot_location_map(df_all_loc_filtered):
         st.warning("No valid coordinates available after filtering.")
         return
 
-    st.subheader("Violation Hotspots Table")
+    st.subheader("Violation Hotspots Table (Top 10 Coords)")
     st.dataframe(
-        map_data_agg.sort_values("total_violations", ascending=False).head(10)
+        map_data_agg.sort_values("total_violations", ascending=False).head(10).style.format({"Latitude": "{:.4f}", "Longitude": "{:.4f}"}),
+        use_container_width=True
     )
 
     st.subheader("Spatial Distribution Map")
@@ -262,7 +354,6 @@ def plot_location_map(df_all_loc_filtered):
         pitch=40
     )
 
-    # ❗ REMOVE mapbox_key (Cloud PyDeck does not support it)
     r = pdk.Deck(
         layers=[layer],
         initial_view_state=view_state,
@@ -286,30 +377,30 @@ def display_kpis(df_all_loc_filtered, df_type_filtered):
         
     if df_type_filtered is not None and not df_type_filtered.empty:
         unique_types = len(df_type_filtered)
-        most_common_type = df_type_filtered.sort_values("total_violations", ascending=False)["Violation_Type"].iloc[0]
+        if "Violation_Type" in df_type_filtered.columns:
+            most_common_type = df_type_filtered.sort_values("total_violations", ascending=False)["Violation_Type"].iloc[0]
         
     
     col1, col2, col3, col4 = st.columns(4)
     
-    # Increased font size for KPI labels
     col1.metric("Total Violations (Filtered)", f"{total_violations:,}", "")
     col2.metric("Unique Violation Types", f"{unique_types}", "")
     col3.metric("Most Common Violation", most_common_type, "")
     
     if df_all_loc_filtered is not None and "Severity" in df_all_loc_filtered.columns:
         try:
-             high_severity_count = df_all_loc_filtered[df_all_loc_filtered["Severity"].astype(int) >= 4].shape[0]
+             # Ensure Severity is numeric for comparison
+             df_all_loc_filtered["Severity"] = pd.to_numeric(df_all_loc_filtered["Severity"], errors='coerce')
+             high_severity_count = df_all_loc_filtered[df_all_loc_filtered["Severity"] >= 4].shape[0]
              col4.metric("High Severity Incidents (Sev 4+)", f"{high_severity_count:,}", "")
         except:
-             col4.metric("High Severity Incidents", "N/A", "")
+             col4.metric("High Severity Incidents", "N/A (Error)", "")
     else:
         col4.metric("High Severity Incidents", "N/A", "")
 
 # Main Application
 
 def main():
-
-    
 
     st.title("🚨 Traffic Violation Analysis Dashboard")
     st.markdown("A visual analytics interface powered by **pre-aggregated PySpark outputs**.")
@@ -319,7 +410,7 @@ def main():
     df_hour = data["hour"]
     df_day = data["day"]
     df_type = data["type"]
-    df_toploc = data["all_loc"] 
+    df_toploc = data["all_loc"] # Renamed to df_all_loc for consistency
     df_all_loc = data["all_loc"]
     df_type_time = data["type_time"]
 
@@ -328,20 +419,36 @@ def main():
     
     # 3. Apply Filters
     # --- FILTERING LOGIC ---
+    
     df_type_filtered = df_type
     if df_type is not None and filters["types"]:
         df_type_filtered = df_type[df_type["Violation_Type"].isin(filters["types"])]
     
+    # Filter df_hour: Aggregate sum of total_violations for selected types
     df_hour_filtered = df_hour
-    if df_hour is not None and "Violation_Type" in df_hour.columns and filters["types"]:
-        df_hour_filtered = df_hour[df_hour["Violation_Type"].isin(filters["types"])]
-        if "Violation_Type" in df_hour.columns:
-             df_hour_filtered = df_hour_filtered.groupby("hour")["total_violations"].sum().reset_index()
-    elif df_hour is not None and df_hour.columns.isin(["hour", "total_violations"]).all():
-         pass 
-         
-    df_toploc_filtered = df_toploc 
-    
+    if df_hour is not None:
+        if "Violation_Type" in df_hour.columns and filters["types"]:
+            df_hour_filtered = df_hour[df_hour["Violation_Type"].isin(filters["types"])]
+            df_hour_filtered = df_hour_filtered.groupby("hour")["total_violations"].sum().reset_index()
+        elif df_hour.columns.isin(["hour", "total_violations"]).all():
+            pass # Keep as is if it's already summed hourly data
+
+    # Filter df_day: Filter by Date Range (Crucial for the new Daily Plot)
+    df_day_filtered = df_day
+    if df_day is not None:
+        if filters["dates"] and len(filters["dates"]) == 2 and "date" in df_day.columns:
+             start_date = pd.to_datetime(filters["dates"][0])
+             end_date = pd.to_datetime(filters["dates"][1])
+             
+             if not pd.api.types.is_datetime64_any_dtype(df_day['date']):
+                 df_day['date'] = pd.to_datetime(df_day['date'], errors='coerce')
+             
+             df_day_filtered = df_day[
+                 (df_day["date"] >= start_date) &
+                 (df_day["date"] <= end_date) 
+             ]
+             
+    # Filter df_all_loc: Apply all filters to the raw/detailed data
     df_all_loc_filtered = df_all_loc.copy()
     if df_all_loc_filtered is not None:
         
@@ -350,7 +457,7 @@ def main():
         
         if filters["severity"] and "Severity" in df_all_loc_filtered.columns:
              df_all_loc_filtered["Severity"] = pd.to_numeric(df_all_loc_filtered["Severity"], errors='coerce')
-             df_all_loc_filtered = df_all_loc_filtered[df_all_loc_filtered["Severity"].isin(filters["severity"])]
+             df_all_loc_filtered = df_all_loc_filtered[df_all_loc_filtered["Severity"].astype(str).isin([str(s) for s in filters["severity"]])]
         
         if filters["dates"] and len(filters["dates"]) == 2 and "Timestamp" in df_all_loc_filtered.columns:
              start_date = pd.to_datetime(filters["dates"][0])
@@ -360,10 +467,10 @@ def main():
                  (df_all_loc_filtered["Timestamp"] <= end_date + pd.Timedelta(days=1, seconds=-1))
              ]
              
+    # df_toploc_filtered is now derived from df_all_loc_filtered in the plotting function
     # --- END FILTERING LOGIC ---
     
     # 4. Display KPIs
-    # Use st.header for main title above KPIs
     st.header("Key Performance Indicators (KPIs)")
     display_kpis(df_all_loc_filtered, df_type_filtered)
     st.markdown("---")
@@ -373,11 +480,14 @@ def main():
     tab1, tab2, tab3 = st.tabs(["🕒 Time & Type Analysis", "🗺️ Location Analysis", "🔍 Explore Raw Data"])
 
     with tab1:
-        # Use display_custom_subheader for main section titles (simulating larger font)
         display_custom_subheader("Time and Violation Type Analysis")
         st.caption("Charts are stacked vertically to maximize clarity and detail across the full page width.")
         
         plot_hourly_trend(df_hour_filtered)
+        
+        st.markdown("---")
+        plot_daily_trend(df_day_filtered) # NEW DAILY PLOT
+        
         st.markdown("---") 
         plot_type_distribution(df_type_filtered)
 
@@ -387,6 +497,10 @@ def main():
     with tab2:
         display_custom_subheader("Violation Hotspots and Spatial Distribution")
         st.caption("The map visualizes the aggregated filtered violation data for hotspot identification.")
+        
+        plot_top_locations_bar(df_all_loc_filtered) # NEW TOP N LOCATION PLOT
+        
+        st.markdown("---")
         plot_location_map(df_all_loc_filtered)
         
     with tab3:
@@ -438,13 +552,23 @@ def main():
                 mime="text/csv"
             )
     with col_dl3:
-        if df_toploc_filtered is not None:
-            st.download_button(
-                "⬇️ Top Locations Data (CSV)", 
-                data=convert_df_to_bytes(df_toploc_filtered, "csv"), 
-                file_name="top_locations_data.csv", 
-                mime="text/csv"
-            )
+        # Since df_all_loc_filtered is the primary source now, use that for top location data export
+        if df_all_loc_filtered is not None and not df_all_loc_filtered.empty:
+            # Aggregate the filtered data for the download, similar to the plot
+            location_col = 'Location' if 'Location' in df_all_loc_filtered.columns else 'Street' if 'Street' in df_all_loc_filtered.columns else 'Location_Name'
+            if location_col in df_all_loc_filtered.columns:
+                 df_agg_loc = df_all_loc_filtered.groupby(location_col).size().reset_index(name='total_violations').sort_values("total_violations", ascending=False)
+                 st.download_button(
+                    "⬇️ Top Locations Data (CSV)", 
+                    data=convert_df_to_bytes(df_agg_loc, "csv"), 
+                    file_name="aggregated_locations_data.csv", 
+                    mime="text/csv"
+                 )
+            else:
+                 st.info("Location data column missing for aggregated download.")
+        else:
+            st.info("Locations data not available for export.")
+
 
     # 7. Footer
     st.markdown("---")
