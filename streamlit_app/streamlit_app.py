@@ -334,26 +334,7 @@ def display_kpis(df_all_loc_filtered, df_type_filtered):
 # NEW: Extra Time & Type plots
 # -----------------------------
 
-def plot_monthly_trend(df_day):
-    """Monthly total violations trend."""
-    if df_day is None or df_day.empty:
-        st.info("Monthly data unavailable.")
-        return
-    if "month" not in df_day.columns or "total_violations" not in df_day.columns:
-        st.info("Daily data missing 'month' or 'total_violations'.")
-        return
 
-    st.subheader("📅 Monthly Violations Trend")
-    chart_df = df_day.copy()
-    chart_df["month"] = chart_df["month"].astype(int)
-
-    chart = alt.Chart(chart_df).mark_bar(color="#6A5ACD").encode(
-        x=alt.X("month:O", title="Month"),
-        y=alt.Y("total_violations:Q", title="Total Violations"),
-        tooltip=["month", "total_violations"]
-    ).properties(height=300)
-
-    st.altair_chart(chart, use_container_width=True)
 
 
 def plot_weekday_trend(df_day):
@@ -523,8 +504,7 @@ def main():
         # Original + New plots
         plot_hourly_trend(df_hour_filtered)
         st.markdown("---")
-        plot_monthly_trend(df_day)
-        st.markdown("---")
+        
         plot_weekday_trend(df_day)
         st.markdown("---")
         plot_type_distribution(df_type_filtered)
